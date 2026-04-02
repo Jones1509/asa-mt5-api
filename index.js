@@ -19,6 +19,26 @@ const pool = new Pool({
 });
 
 async function initDB() {
+  // Migrer account_data fra INTEGER id til TEXT id hvis nødvendigt
+  try {
+    const col = await pool.query(`
+      SELECT data_type FROM information_schema.columns
+      WHERE table_name = 'account_data' AND column_name = 'id'
+    `);
+    if (col.rows.length > 0 && col.rows[0].data_type === 'integer') {
+      console.log('Migrerer account_data tabel fra INTEGER til TEXT id...');
+      await pool.query(`
+        ALTER TABLE account_data RENAME TO account_data_old;
+        CREATE TABLE account_data (id TEXT PRIMARY KEY, data JSONB NOT NULL DEFAULT '{}');
+        INSERT INTO account_data (id, data) SELECT '1', data FROM account_data_old WHERE id = 1;
+        DROP TABLE account_data_old;
+      `);
+      console.log('Migration færdig!');
+    }
+  } catch(e) {
+    console.log('Migration check:', e.message);
+  }
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS account_data (
       id TEXT PRIMARY KEY,
