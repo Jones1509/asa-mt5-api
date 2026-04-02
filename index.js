@@ -51,13 +51,6 @@ async function initDB() {
   console.log('Database initialiseret!');
 }
 
-let pendingCommands = [];
-
-app.use((req, res, next) => {
-  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-  next();
-});
-
 app.post('/api/account', async (req, res) => {
   try {
     await pool.query('UPDATE account_data SET data = $1 WHERE id = 1', [req.body]);
@@ -69,10 +62,16 @@ app.post('/api/account', async (req, res) => {
   }
 });
 
-app.get('/api/commands/pending', (req, res) => {
-  if(pendingCommands.length === 0) { res.json({}); return; }
-  const cmd = pendingCommands.shift();
-  res.json(cmd);
+app.get('/api/commands/pending', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT id, command FROM commands ORDER BY created_at ASC LIMIT 1');
+    if(result.rows.length === 0) { res.json({}); return; }
+    const row = result.rows[0];
+    await pool.query('DELETE FROM commands WHERE id = $1', [row.id]);
+    res.json(row.command);
+  } catch(e) {
+    res.json({});
+  }
 });
 
 app.post('/api/command/result', async (req, res) => {
@@ -84,7 +83,7 @@ app.post('/api/command/result', async (req, res) => {
   }
 });
 
-app.post('/api/command', (req, res) => {
+app.post('/api/command', async (req, res) => {
   const { command, value, symbol, ticket, minutes, start_hour, end_hour } = req.body;
   let cmd = { action: command };
   if(value !== undefined) cmd.value = value;
@@ -93,8 +92,12 @@ app.post('/api/command', (req, res) => {
   if(minutes) cmd.minutes = minutes;
   if(start_hour) cmd.start_hour = start_hour;
   if(end_hour) cmd.end_hour = end_hour;
-  pendingCommands.push(cmd);
-  res.json({ status: 'ok', message: 'Kommando sendt til MT5' });
+  try {
+    await pool.query('INSERT INTO commands (command) VALUES ($1)', [cmd]);
+    res.json({ status: 'ok', message: 'Kommando sendt til MT5' });
+  } catch(e) {
+    res.json({ status: 'error' });
+  }
 });
 
 app.post('/api/trade/open', (req, res) => {
