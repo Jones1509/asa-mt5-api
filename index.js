@@ -19,7 +19,6 @@ const pool = new Pool({
 });
 
 async function initDB() {
-  // Migrer account_data fra INTEGER id til TEXT id hvis nødvendigt
   try {
     const col = await pool.query(`
       SELECT data_type FROM information_schema.columns
@@ -97,17 +96,13 @@ app.post('/api/account', async (req, res) => {
     const body = req.body;
     const bot = body.bot || 'unknown';
 
-    // Gem per bot
     await pool.query(
       'INSERT INTO account_data (id, data) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET data = $2',
       [bot, body]
     );
 
-    // Sync åbne trades fra positions array
     if (body.positions && Array.isArray(body.positions)) {
-      // Slet gamle åbne trades for denne bot
       await pool.query('DELETE FROM open_trades WHERE bot = $1', [bot]);
-      // Indsæt nye
       for (const pos of body.positions) {
         await pool.query(`
           INSERT INTO open_trades (ticket, symbol, direction, lot, open_price, current_price, profit, sl, tp, bot, open_time, updated_at)
@@ -122,16 +117,14 @@ app.post('/api/account', async (req, res) => {
       }
     }
 
-    // Opdater combined (seneste balance fra en hvilken som helst bot)
     const metals = await pool.query("SELECT data FROM account_data WHERE id = 'metals'");
     const major  = await pool.query("SELECT data FROM account_data WHERE id = 'major'");
     const yen    = await pool.query("SELECT data FROM account_data WHERE id = 'yen'");
 
-    const mData = metals.rows[0]?.data || {};
-    const majData = major.rows[0]?.data || {};
-    const yData = yen.rows[0]?.data || {};
+    const mData   = metals.rows[0]?.data || {};
+    const majData = major.rows[0]?.data  || {};
+    const yData   = yen.rows[0]?.data    || {};
 
-    // Balance er den samme konto — brug den mest opdaterede
     const combined = {
       balance: body.balance,
       equity: body.equity,
@@ -183,7 +176,6 @@ app.post('/api/command/result', async (req, res) => {
       'INSERT INTO command_results (result) VALUES ($1)',
       [{ ...req.body, timestamp: new Date().toISOString() }]
     );
-    console.log('Kommando resultat:', req.body);
     res.json({ status: 'ok' });
   } catch(e) {
     res.json({ status: 'error' });
@@ -195,15 +187,13 @@ app.post('/api/command/result', async (req, res) => {
 // ============================================================
 app.post('/api/command', async (req, res) => {
   const { command, value, symbol, ticket, minutes, start_hour, end_hour } = req.body;
-
-  // Brug "action" felt — det er hvad MT5 forventer
   let cmd = { action: command };
   if (value !== undefined) cmd.value = value;
-  if (symbol)      cmd.symbol = symbol;
-  if (ticket)      cmd.ticket = ticket;
-  if (minutes)     cmd.minutes = minutes;
-  if (start_hour)  cmd.start_hour = start_hour;
-  if (end_hour)    cmd.end_hour = end_hour;
+  if (symbol)     cmd.symbol = symbol;
+  if (ticket)     cmd.ticket = ticket;
+  if (minutes)    cmd.minutes = minutes;
+  if (start_hour) cmd.start_hour = start_hour;
+  if (end_hour)   cmd.end_hour = end_hour;
 
   try {
     await pool.query('INSERT INTO commands (command) VALUES ($1)', [cmd]);
@@ -240,16 +230,11 @@ app.post('/api/trade/open', async (req, res) => {
 app.post('/api/trade/close', async (req, res) => {
   try {
     const { ticket, symbol, direction, lot, open_price, close_price, profit, bot, timestamp } = req.body;
-
-    // Gem i historik
     await pool.query(
       'INSERT INTO trades (ticket, symbol, direction, lot, open_price, close_price, profit, bot, timestamp) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
       [ticket, symbol, direction, lot, open_price, close_price, profit, bot || 'unknown', timestamp]
     );
-
-    // Fjern fra åbne trades
     await pool.query('DELETE FROM open_trades WHERE ticket = $1', [ticket]);
-
     console.log(`Trade lukket: ${symbol} ${direction} profit:${profit}`);
     res.json({ status: 'ok' });
   } catch(e) {
@@ -263,7 +248,6 @@ app.post('/api/trade/close', async (req, res) => {
 // ============================================================
 app.get('/api/status', async (req, res) => {
   try {
-    // Account data per bot
     const accountResult = await pool.query('SELECT id, data FROM account_data');
     const accountMap = {};
     accountResult.rows.forEach(r => { accountMap[r.id] = r.data; });
@@ -273,19 +257,15 @@ app.get('/api/status', async (req, res) => {
     const majorData  = accountMap['major']    || {};
     const yenData    = accountMap['yen']      || {};
 
-    // Åbne trades fra database
-    const openResult = await pool.query('SELECT * FROM open_trades ORDER BY open_time DESC');
-    const openTrades = openResult.rows;
+    const openResult   = await pool.query('SELECT * FROM open_trades ORDER BY open_time DESC');
+    const openTrades   = openResult.rows;
 
-    // Lukkede trades
     const tradesResult = await pool.query('SELECT * FROM trades ORDER BY created_at DESC LIMIT 1000');
     const closedTrades = tradesResult.rows;
 
-    // Kommando resultater
-    const resultsResult = await pool.query('SELECT result FROM command_results ORDER BY created_at DESC LIMIT 50');
+    const resultsResult  = await pool.query('SELECT result FROM command_results ORDER BY created_at DESC LIMIT 50');
     const commandResults = resultsResult.rows.map(r => r.result);
 
-    // Stats
     const totalProfit   = closedTrades.reduce((sum, t) => sum + (t.profit || 0), 0);
     const winningTrades = closedTrades.filter(t => t.profit > 0);
     const winRate       = closedTrades.length > 0
@@ -310,30 +290,24 @@ app.get('/api/status', async (req, res) => {
     });
 
     res.json({
-      // Primære account data (combined)
       account: {
         ...combined,
-        balance:  combined.balance  || metalsData.balance  || majorData.balance  || yenData.balance  || 0,
-        equity:   combined.equity   || metalsData.equity   || majorData.equity   || yenData.equity   || 0,
+        balance:         combined.balance  || metalsData.balance  || majorData.balance  || yenData.balance  || 0,
+        equity:          combined.equity   || metalsData.equity   || majorData.equity   || yenData.equity   || 0,
         floating_profit: combined.floating_profit || 0,
-        open_trades: openTrades.length,
-        bot_running: combined.bot_running || false,
-        last_update: combined.last_update || null,
+        open_trades:     openTrades.length,
+        bot_running:     combined.bot_running || false,
+        last_update:     combined.last_update || null,
       },
-      // Per bot data
-      bots: {
-        metals: metalsData,
-        major:  majorData,
-        yen:    yenData,
-      },
-      open_trades:    openTrades,
-      closed_trades:  closedTrades,
+      bots: { metals: metalsData, major: majorData, yen: yenData },
+      open_trades:     openTrades,
+      closed_trades:   closedTrades,
       command_results: commandResults,
       stats: {
-        total_profit:    totalProfit,
-        win_rate:        winRate,
-        total_trades:    closedTrades.length,
-        winning_trades:  winningTrades.length,
+        total_profit:     totalProfit,
+        win_rate:         winRate,
+        total_trades:     closedTrades.length,
+        winning_trades:   winningTrades.length,
         profit_by_symbol: profitBySymbol,
         profit_by_bot:    profitByBot,
       }
@@ -341,6 +315,23 @@ app.get('/api/status', async (req, res) => {
   } catch(e) {
     console.error('Status fejl:', e);
     res.json({ error: e.message });
+  }
+});
+
+// ============================================================
+// NULSTIL DATA — ryd gammel historik og start fresh
+// ============================================================
+app.post('/api/reset-stats', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM trades');
+    await pool.query('DELETE FROM command_results');
+    await pool.query('DELETE FROM open_trades');
+    await pool.query("UPDATE account_data SET data = '{}' WHERE id != 'combined'");
+    console.log('✅ Database nulstillet!');
+    res.json({ status: 'ok', message: 'Data nulstillet — fresh start!' });
+  } catch(e) {
+    console.error('Reset fejl:', e);
+    res.json({ status: 'error', message: e.message });
   }
 });
 
